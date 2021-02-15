@@ -139,7 +139,7 @@ func downloadImg(ctx context.Context, url string, title string) error {
 	}
 	rsp.Body.Close()
 
-	if err := os.Mkdir("dump", 0644); err != nil && !os.IsExist(err) {
+	if err := os.Mkdir("dump", 0777); err != nil && !os.IsExist(err) {
 		return err
 	}
 
