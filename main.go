@@ -1,40 +1,41 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/Misora000/easyhtml"
+	"regexp"
+	"strings"
 )
 
 func main() {
 	ctx := context.Background()
-	illustPages := []string{}
 
-	for i := 1; i <= 23; i++ {
-		p := fmt.Sprintf("https://prisma-illya.jp/portal/illust/page/%d", i)
-		if r, err := dumpIllustPageURL(ctx, p); err == nil {
-			illustPages = append(illustPages, r...)
-		} else {
-			log.Println(err)
-		}
+	list, err := getIllustJSON(ctx)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	for _, u := range illustPages {
-		title, illustURL, err := dumpIllustURL(ctx, "https://prisma-illya.jp"+u)
+	for i, v := range list {
+		// Detect the thumbnail url by the format `*-300x500.jpg`.
+		isThumbnail, err := regexp.Match("-[0-9]{3}x[0-9]{3}.jpg", []byte(v.Eyecatch))
 		if err != nil {
 			log.Println(err)
 			continue
 		}
 
-		fmt.Printf("downloading %v ... ", title)
-		if err = downloadImg(ctx, illustURL, title); err != nil {
+		if isThumbnail {
+			// Covert the thumbnail url to the real url.
+			seg := strings.Split(v.Eyecatch, "-")
+			v.Eyecatch = strings.Join(seg[0:len(seg)-1], "-") + ".jpg"
+		}
+
+		fmt.Printf("(%03d/%03d) downloading %v ... ", i+1, len(list), v.Title)
+		if err = downloadImg(ctx, v.Eyecatch, v.Title); err != nil {
 			fmt.Printf("failed\n")
 			log.Println(err)
 			continue
@@ -43,56 +44,28 @@ func main() {
 	}
 }
 
-func dumpIllustPageURL(ctx context.Context, URL string) ([]string, error) {
-	o := []string{}
+type allIllustRsp struct {
+	ID       int    `json:"id"`
+	Title    string `json:"title"`
+	Eyecatch string `json:"eyecatch"`
+}
 
-	body, err := getByHTTP(ctx, URL)
+func getIllustJSON(ctx context.Context) ([]*allIllustRsp, error) {
+	o := []*allIllustRsp{}
+
+	rawText, err := getByHTTP(ctx, "https://prisma-illya.jp/portal/allillusts")
 	if err != nil {
 		return nil, err
 	}
 
-	z := easyhtml.NewTokenizer(body)
-	for {
-		attr, eof := z.JumpToClass("a", "c-card--link")
-		if eof {
-			break
-		}
-		if u, exists := attr["href"]; exists {
-			o = append(o, u)
-		}
+	if err = json.Unmarshal(rawText, &o); err != nil {
+		return nil, err
 	}
 
 	return o, nil
 }
 
-func dumpIllustURL(ctx context.Context, URL string) (string, string, error) {
-	title := ""
-	imgURL := ""
-
-	body, err := getByHTTP(ctx, URL)
-	if err != nil {
-		return title, imgURL, err
-	}
-
-	z := easyhtml.NewTokenizer(body)
-	attr, eof := z.JumpToClass("img", "u-sz_w_100-sp")
-	if eof {
-		return "", "", fmt.Errorf("EOF")
-	}
-
-	if u, exists := attr["src"]; exists {
-		imgURL = u
-	}
-
-	if _, eof = z.JumpToClass("h1", "c-entry-header__title"); eof {
-		return title, imgURL, nil
-	}
-	title, _ = z.GetNextText()
-
-	return title, imgURL, nil
-}
-
-func getByHTTP(ctx context.Context, url string) (io.Reader, error) {
+func getByHTTP(ctx context.Context, url string) ([]byte, error) {
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -106,13 +79,9 @@ func getByHTTP(ctx context.Context, url string) (io.Reader, error) {
 		return nil, err
 	}
 
-	buf, err := ioutil.ReadAll(rsp.Body)
-	if err != nil {
-		return nil, err
-	}
-	rsp.Body.Close()
+	defer rsp.Body.Close()
 
-	return bytes.NewReader(buf), nil
+	return ioutil.ReadAll(rsp.Body)
 }
 
 func downloadImg(ctx context.Context, url string, title string) error {
@@ -121,23 +90,10 @@ func downloadImg(ctx context.Context, url string, title string) error {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	buf, err := getByHTTP(ctx, url)
 	if err != nil {
 		return err
 	}
-	req.WithContext(ctx)
-
-	client := &http.Client{}
-	rsp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-
-	buf, err := ioutil.ReadAll(rsp.Body)
-	if err != nil {
-		return err
-	}
-	rsp.Body.Close()
 
 	if err := os.Mkdir("dump", 0777); err != nil && !os.IsExist(err) {
 		return err
